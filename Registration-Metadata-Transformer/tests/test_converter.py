@@ -8,11 +8,13 @@ import sys
 import os
 import tempfile
 import pandas as pd
+import logging
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 # Add parent directory to path to import converter
 sys.path.append(str(Path(__file__).parent.parent))
-from convert_to_curve import CurveConverter
+from convert_to_curve import CurveConverter, ConfigurationError, ValidationError, TransformError
 
 
 class TestCurveConverter(unittest.TestCase):
@@ -270,6 +272,94 @@ class TestValidationRules(unittest.TestCase):
         errors = self.converter.validate_value('01/15/2024', 'date_format', 'Date')
         self.assertEqual(len(errors), 1)
         self.assertIn('Invalid date format', errors[0])
+
+
+class TestErrorHandling(unittest.TestCase):
+    """Test error handling and edge cases"""
+    
+    def setUp(self):
+        # Create a minimal valid mapping for error testing
+        self.test_mapping = {
+            'columns': [
+                {'dest': 'Work Title', 'source': 'Title', 'validation': 'required'}
+            ],
+            'validation_rules': {}
+        }
+        
+        self.temp_mapping = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
+        import yaml
+        yaml.dump(self.test_mapping, self.temp_mapping)
+        self.temp_mapping.close()
+    
+    def tearDown(self):
+        os.unlink(self.temp_mapping.name)
+    
+    def test_missing_mapping_file(self):
+        """Test handling of missing mapping file"""
+        with self.assertRaises(ConfigurationError):
+            CurveConverter('nonexistent_file.yaml')
+    
+    def test_empty_mapping_file(self):
+        """Test handling of empty mapping file"""
+        empty_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
+        empty_file.write('')
+        empty_file.close()
+        
+        try:
+            with self.assertRaises(ConfigurationError):
+                CurveConverter(empty_file.name)
+        finally:
+            os.unlink(empty_file.name)
+
+
+class TestIntegration(unittest.TestCase):
+    """Integration tests for full conversion workflows"""
+    
+    def setUp(self):
+        self.test_mapping = {
+            'columns': [
+                {'dest': 'Work Title', 'source': 'Title', 'transform': 'strip', 'validation': 'required'},
+                {'dest': 'Artist Name', 'source': 'Artist', 'transform': 'strip'},
+            ],
+            'validation_rules': {
+                'required_fields': ['Work Title']
+            }
+        }
+        
+        self.temp_mapping = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
+        import yaml
+        yaml.dump(self.test_mapping, self.temp_mapping)
+        self.temp_mapping.close()
+    
+    def tearDown(self):
+        os.unlink(self.temp_mapping.name)
+    
+    def test_csv_conversion(self):
+        """Test full CSV conversion workflow"""
+        converter = CurveConverter(self.temp_mapping.name, log_level='ERROR')  # Suppress logs
+        
+        # Create test CSV
+        test_data = pd.DataFrame({
+            'Title': ['Song 1', 'Song 2'],
+            'Artist': ['Artist A', 'Artist B']
+        })
+        
+        input_file = tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False)
+        test_data.to_csv(input_file.name, index=False)
+        input_file.close()
+        
+        output_file = tempfile.NamedTemporaryFile(suffix='.csv', delete=False)
+        output_file.close()
+        
+        try:
+            result = converter.convert_file(input_file.name, output_file.name)
+            self.assertTrue(result)
+            self.assertTrue(Path(output_file.name).exists())
+            
+        finally:
+            os.unlink(input_file.name)
+            if Path(output_file.name).exists():
+                os.unlink(output_file.name)
 
 
 if __name__ == '__main__':

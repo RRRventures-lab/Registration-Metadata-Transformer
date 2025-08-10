@@ -12,28 +12,199 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Union
 import unicodedata
+import logging
+import traceback
+
+
+# Custom Exceptions
+class CurveConverterError(Exception):
+    """Base exception for converter errors"""
+    pass
+
+
+class ValidationError(CurveConverterError):
+    """Raised when validation fails"""
+    pass
+
+
+class TransformError(CurveConverterError):
+    """Raised when transformation fails"""
+    pass
+
+
+class ConfigurationError(CurveConverterError):
+    """Raised when configuration is invalid"""
+    pass
+
+
+# Configure logging
+def setup_logging(log_level: str = 'INFO', log_file: Optional[str] = None) -> logging.Logger:
+    """Set up logging configuration"""
+    logger = logging.getLogger('curve_converter')
+    logger.setLevel(getattr(logging, log_level.upper()))
+    
+    # Clear existing handlers
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    # File handler if specified
+    if log_file:
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+    
+    return logger
 
 
 class CurveConverter:
-    def __init__(self, mapping_file: str, strict: bool = False):
+    def __init__(self, mapping_file: str, strict: bool = False, 
+                 max_file_size: int = 100_000_000, log_level: str = 'INFO'):
+        """Initialize the Curve Converter
+        
+        Args:
+            mapping_file: Path to YAML mapping configuration
+            strict: If True, fail on validation errors
+            max_file_size: Maximum allowed input file size in bytes
+            log_level: Logging level (DEBUG, INFO, WARNING, ERROR)
+        """
         self.strict = strict
+        self.max_file_size = max_file_size
         self.errors = []
+        self.logger = setup_logging(log_level)
+        
+        self.logger.info(f"Initializing CurveConverter with mapping: {mapping_file}")
+        self._validate_inputs(mapping_file)
         self.load_mapping(mapping_file)
+    
+    def _validate_inputs(self, mapping_file: str) -> None:
+        """Validate input parameters and file safety"""
+        try:
+            mapping_path = Path(mapping_file).resolve()
+            
+            # Check if file exists
+            if not mapping_path.exists():
+                raise ConfigurationError(f"Mapping file not found: {mapping_file}")
+            
+            # Check file size (prevent extremely large config files)
+            file_size = mapping_path.stat().st_size
+            if file_size > 10_000_000:  # 10MB limit for config files
+                raise ConfigurationError(f"Mapping file too large: {file_size} bytes")
+            
+            # Basic path safety check
+            if '..' in str(mapping_path) or str(mapping_path).startswith('/'):
+                self.logger.warning(f"Potentially unsafe file path: {mapping_path}")
+                
+            self.logger.debug(f"Mapping file validation passed: {mapping_path}")
+            
+        except Exception as e:
+            self.logger.error(f"Input validation failed: {e}")
+            raise
+    
+    def _validate_file_path(self, file_path: str) -> str:
+        """Validate and sanitize file path for processing"""
+        try:
+            path = Path(file_path).resolve()
+            
+            # Check if file exists
+            if not path.exists():
+                raise FileNotFoundError(f"File not found: {file_path}")
+            
+            # Check file size
+            file_size = path.stat().st_size
+            if file_size > self.max_file_size:
+                raise ValueError(f"File too large: {file_size} bytes (max: {self.max_file_size})")
+            
+            self.logger.debug(f"File path validation passed: {path}")
+            return str(path)
+            
+        except Exception as e:
+            self.logger.error(f"File path validation failed for {file_path}: {e}")
+            raise
         
     def load_mapping(self, mapping_file: str):
         """Load mapping configuration from YAML file"""
-        with open(mapping_file, 'r') as f:
-            self.config = yaml.safe_load(f)
-        self.columns = self.config['columns']
-        self.lookups = self.config.get('lookups', {})
-        self.validation_rules = self.config.get('validation_rules', {})
+        try:
+            with open(mapping_file, 'r', encoding='utf-8') as f:
+                self.config = yaml.safe_load(f)
+            
+            # Validate required configuration sections
+            if not self.config:
+                raise ConfigurationError("Empty configuration file")
+            
+            if 'columns' not in self.config:
+                raise ConfigurationError("Missing 'columns' section in configuration")
+            
+            self.columns = self.config['columns']
+            if not self.columns:
+                raise ConfigurationError("No column mappings defined")
+            
+            self.lookups = self.config.get('lookups', {})
+            self.validation_rules = self.config.get('validation_rules', {})
+            
+            # Validate column mappings structure
+            self._validate_column_mappings()
+            
+            self.logger.info(f"Loaded {len(self.columns)} column mappings")
+            self.logger.debug(f"Available lookups: {list(self.lookups.keys())}")
+            
+        except yaml.YAMLError as e:
+            self.logger.error(f"YAML parsing error: {e}")
+            raise ConfigurationError(f"Invalid YAML configuration: {e}")
+        except Exception as e:
+            self.logger.error(f"Configuration loading failed: {e}")
+            raise
+    
+    def _validate_column_mappings(self):
+        """Validate the structure of column mappings"""
+        required_fields = {'dest'}
+        valid_transforms = {
+            'strip', 'uppercase', 'lowercase', 'titlecase', 'strip_diacritics',
+            'percent_0_100', 'percent_0_1', 'format_iswc', 'format_isrc', 'format_ipi',
+            'format_duration', 'map_role', 'map_society', 'map_territory',
+            'extract_writer_name', 'extract_writer_society', 'extract_writer_ipi',
+            'extract_mechanical_share', 'extract_performance_share',
+            'extract_additional_writer_name', 'extract_additional_writer_society',
+            'extract_additional_mechanical_share', 'extract_additional_performance_share',
+            'extract_publisher_name', 'extract_publisher_society',
+            'extract_publisher_mechanical_share', 'extract_publisher_performance_share'
+        }
+        
+        for i, column in enumerate(self.columns):
+            if not isinstance(column, dict):
+                raise ConfigurationError(f"Column mapping {i} must be a dictionary")
+            
+            # Check required fields
+            for field in required_fields:
+                if field not in column:
+                    raise ConfigurationError(f"Column mapping {i} missing required field: {field}")
+            
+            # Validate transform if specified
+            transform = column.get('transform', '')
+            if transform and not transform.startswith('to_date:') and not transform.startswith('padleft:'):
+                if transform not in valid_transforms:
+                    self.logger.warning(f"Unknown transform '{transform}' in column mapping {i}")
+        
+        self.logger.debug(f"Column mappings validation passed for {len(self.columns)} mappings")
         
     def transform_value(self, value: Any, transform: str, lookups: Dict = None) -> Any:
         """Apply transformation to a value"""
         if pd.isna(value) or value == '':
             return ''
-            
-        value = str(value).strip()
+        
+        try:
+            value = str(value).strip()
+        except Exception as e:
+            self.logger.warning(f"Failed to convert value to string: {value} - {e}")
+            return ''
         
         if transform == "strip":
             return value.strip()
@@ -483,52 +654,151 @@ class CurveConverter:
         return result
     
     def convert_file(self, input_file: str, output_file: str) -> bool:
-        """Convert entire file"""
+        """Convert entire file with improved error handling and validation"""
+        start_time = datetime.now()
+        
         try:
-            # Read input file
-            if input_file.endswith('.xlsx') or input_file.endswith('.xls'):
-                df = pd.read_excel(input_file)
-            else:
-                df = pd.read_csv(input_file)
+            # Validate input file path
+            validated_input = self._validate_file_path(input_file)
+            self.logger.info(f"Starting conversion: {validated_input} -> {output_file}")
             
-            print(f"Loaded {len(df)} rows from {input_file}")
+            # Clear previous errors
+            self.errors = []
             
-            # Convert each row
+            # Read input file with error handling
+            try:
+                if input_file.lower().endswith(('.xlsx', '.xls')):
+                    self.logger.debug("Reading Excel file")
+                    df = pd.read_excel(validated_input, engine='openpyxl')
+                elif input_file.lower().endswith('.csv'):
+                    self.logger.debug("Reading CSV file")
+                    df = pd.read_csv(validated_input, encoding='utf-8')
+                else:
+                    raise ValueError(f"Unsupported file format: {input_file}")
+                    
+            except FileNotFoundError:
+                raise FileNotFoundError(f"Input file not found: {input_file}")
+            except pd.errors.EmptyDataError:
+                raise ValueError(f"Input file is empty: {input_file}")
+            except Exception as e:
+                raise ValueError(f"Failed to read input file {input_file}: {str(e)}")
+            
+            if df.empty:
+                raise ValueError("Input file contains no data rows")
+            
+            self.logger.info(f"Loaded {len(df)} rows from {input_file}")
+            self.logger.debug(f"Input columns: {list(df.columns)}")
+            
+            # Validate that we have the expected source columns
+            self._validate_source_columns(df.columns)
+            
+            # Convert each row with progress tracking
             converted_rows = []
+            conversion_errors = 0
+            
             for idx, row in df.iterrows():
-                converted_row = self.convert_row(row, idx + 2)  # +2 for 1-based + header
-                converted_rows.append(converted_row)
+                try:
+                    converted_row = self.convert_row(row, idx + 2)  # +2 for 1-based + header
+                    converted_rows.append(converted_row)
+                except Exception as e:
+                    conversion_errors += 1
+                    self.logger.error(f"Failed to convert row {idx + 2}: {e}")
+                    if self.strict:
+                        raise TransformError(f"Row conversion failed at row {idx + 2}: {e}")
+                    # Add empty row with error marker
+                    empty_row = {col['dest']: '' for col in self.columns}
+                    empty_row['Work Title'] = f"ERROR_ROW_{idx + 2}"
+                    converted_rows.append(empty_row)
+            
+            if not converted_rows:
+                raise ValueError("No rows were successfully converted")
             
             # Create output DataFrame with exact column order from mapping
             column_order = [col['dest'] for col in self.columns]
             result_df = pd.DataFrame(converted_rows, columns=column_order)
             
-            # Write output file
-            if output_file.endswith('.xlsx'):
-                result_df.to_excel(output_file, index=False)
-            else:
-                result_df.to_csv(output_file, index=False)
+            # Validate output directory exists
+            output_path = Path(output_file)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
             
-            print(f"Converted {len(result_df)} rows to {output_file}")
+            # Write output file
+            try:
+                if output_file.lower().endswith('.xlsx'):
+                    result_df.to_excel(output_file, index=False, engine='openpyxl')
+                else:
+                    result_df.to_csv(output_file, index=False, encoding='utf-8')
+                    
+            except PermissionError:
+                raise PermissionError(f"Cannot write to output file (permission denied): {output_file}")
+            except Exception as e:
+                raise IOError(f"Failed to write output file {output_file}: {str(e)}")
+            
+            # Performance metrics
+            end_time = datetime.now()
+            duration = (end_time - start_time).total_seconds()
+            rows_per_second = len(df) / duration if duration > 0 else 0
+            
+            self.logger.info(f"Converted {len(result_df)} rows to {output_file}")
+            self.logger.info(f"Conversion completed in {duration:.2f} seconds ({rows_per_second:.1f} rows/sec)")
+            
+            if conversion_errors > 0:
+                self.logger.warning(f"Encountered {conversion_errors} row conversion errors")
             
             # Write errors file if there are errors
             if self.errors:
                 error_file = output_file.replace('.xlsx', '_errors.csv').replace('.csv', '_errors.csv')
-                error_df = pd.DataFrame(self.errors)
-                error_df.to_csv(error_file, index=False)
-                print(f"Found {len(self.errors)} validation errors - see {error_file}")
+                try:
+                    error_df = pd.DataFrame(self.errors)
+                    error_df.to_csv(error_file, index=False, encoding='utf-8')
+                    self.logger.info(f"Found {len(self.errors)} validation errors - see {error_file}")
+                except Exception as e:
+                    self.logger.error(f"Failed to write error file: {e}")
                 
                 if self.strict:
-                    print("STRICT MODE: Conversion failed due to validation errors")
+                    self.logger.error("STRICT MODE: Conversion failed due to validation errors")
                     return False
             else:
-                print("No validation errors found")
+                self.logger.info("No validation errors found")
             
             return True
             
-        except Exception as e:
-            print(f"Conversion failed: {str(e)}")
+        except (FileNotFoundError, PermissionError, ValueError, IOError) as e:
+            self.logger.error(f"Conversion failed: {str(e)}")
             return False
+        except ConfigurationError as e:
+            self.logger.error(f"Configuration error: {str(e)}")
+            return False  
+        except TransformError as e:
+            self.logger.error(f"Transform error: {str(e)}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error during conversion: {str(e)}")
+            self.logger.debug(f"Stack trace: {traceback.format_exc()}")
+            return False
+    
+    def _validate_source_columns(self, available_columns: List[str]) -> None:
+        """Validate that required source columns are available"""
+        missing_columns = []
+        available_set = set(available_columns)
+        
+        for column_config in self.columns:
+            source_col = column_config.get('source', '')
+            if source_col and source_col not in available_set:
+                # Only warn for missing columns, don't fail
+                # Some transforms don't require source columns
+                self.logger.debug(f"Source column '{source_col}' not found in input data")
+        
+        # Check if we have at least some mappable columns
+        mappable_columns = 0
+        for column_config in self.columns:
+            source_col = column_config.get('source', '')
+            if not source_col or source_col in available_set:
+                mappable_columns += 1
+        
+        if mappable_columns == 0:
+            raise ValueError("No mappable columns found in input data")
+        
+        self.logger.debug(f"Found {mappable_columns} mappable columns out of {len(self.columns)} configured")
 
 
 def main():
@@ -541,23 +811,36 @@ def main():
                        help='YAML mapping configuration file')
     parser.add_argument('--strict', action='store_true',
                        help='Fail on validation errors')
+    parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+                       default='INFO', help='Set logging level (default: INFO)')
+    parser.add_argument('--log-file', help='Optional log file path')
+    parser.add_argument('--max-file-size', type=int, default=100_000_000,
+                       help='Maximum input file size in bytes (default: 100MB)')
     
     args = parser.parse_args()
     
-    # Validate input files exist
-    if not Path(args.input_file).exists():
-        print(f"Error: Input file not found: {args.input_file}")
+    try:
+        # Create converter and run conversion
+        converter = CurveConverter(
+            args.mapping_file, 
+            args.strict, 
+            args.max_file_size,
+            args.log_level
+        )
+        
+        # Set up file logging if specified
+        if args.log_file:
+            converter.logger = setup_logging(args.log_level, args.log_file)
+        
+        success = converter.convert_file(args.input_file, args.output_file)
+        sys.exit(0 if success else 1)
+        
+    except (ConfigurationError, FileNotFoundError, ValueError) as e:
+        print(f"Error: {e}")
         sys.exit(1)
-    
-    if not Path(args.mapping_file).exists():
-        print(f"Error: Mapping file not found: {args.mapping_file}")
+    except Exception as e:
+        print(f"Unexpected error: {e}")
         sys.exit(1)
-    
-    # Create converter and run conversion
-    converter = CurveConverter(args.mapping_file, args.strict)
-    success = converter.convert_file(args.input_file, args.output_file)
-    
-    sys.exit(0 if success else 1)
 
 
 if __name__ == '__main__':

@@ -10,6 +10,10 @@ A robust Python tool to convert Master Catalog exports into Curve Work Import fo
 - **Error Reporting**: Detailed error CSV with row-level validation issues
 - **Multiple Formats**: Supports Excel (.xlsx) and CSV input/output
 - **Strict Mode**: Option to fail on validation errors
+- **Security Hardened**: Input validation, path sanitization, file size limits
+- **Professional Logging**: Configurable logging levels with file output
+- **Error Recovery**: Graceful handling of malformed data with detailed diagnostics
+- **Performance Monitoring**: Built-in timing and throughput metrics
 
 ## Quick Start
 
@@ -38,6 +42,30 @@ python convert_to_curve.py \
   --map "mapping.yaml" \
   --strict
 ```
+
+### Advanced Options
+```bash
+python convert_to_curve.py \
+  --in "master_catalog.xlsx" \
+  --out "curve_import.xlsx" \
+  --map "mapping.yaml" \
+  --log-level DEBUG \
+  --log-file conversion.log \
+  --max-file-size 200000000 \
+  --strict
+```
+
+#### Command Line Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--in` | Input Excel/CSV file (Master Catalog) | Required |
+| `--out` | Output Excel/CSV file (Curve format) | Required |
+| `--map` | YAML mapping configuration file | Required |
+| `--strict` | Fail on validation errors | False |
+| `--log-level` | Logging level (DEBUG, INFO, WARNING, ERROR) | INFO |
+| `--log-file` | Optional log file path | None |
+| `--max-file-size` | Maximum input file size in bytes | 100MB |
 
 ## Configuration
 
