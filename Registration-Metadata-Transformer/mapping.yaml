@@ -1,0 +1,214 @@
+# Curve Converter Mapping Configuration
+# Maps Master Catalog columns to Curve Work Import Template
+
+metadata:
+  version: "1.0"
+  description: "Master Catalog to Curve Work Import converter mapping"
+  
+# Column mappings: each entry maps to a column in the Curve template
+# Updated to match MCAT Sample.xlsx structure
+columns:
+  # Work Information
+  - dest: "Work Title"
+    source: "Song Title"
+    transform: "strip"
+    validation: "required"
+    
+  - dest: "Alternative Title"
+    source: ""
+    transform: "strip"
+    default: ""
+    
+  - dest: "ISWC"
+    source: ""
+    transform: "format_iswc"
+    validation: "iswc_format"
+    default: ""
+    
+  - dest: "Registration Date"
+    source: "Date Added"
+    transform: "to_date:%Y-%m-%d"
+    validation: "date_format"
+    
+  - dest: "Territory"
+    source: "Territory"
+    transform: "map_territory"
+    default: "WW"
+    
+  - dest: "Language"
+    source: ""
+    transform: "uppercase"
+    default: "EN"
+    
+  - dest: "Artist Name"
+    source: "Artist Name"
+    transform: "strip"
+    
+  - dest: "Release Title"
+    source: "Release Title"
+    transform: "strip"
+    
+  - dest: "Release Date"
+    source: "Release Date"
+    transform: "to_date:%Y-%m-%d"
+    
+  - dest: "Label"
+    source: "Label"
+    transform: "strip"
+    
+  - dest: "Agreement Type"
+    source: "Agreement Type"
+    transform: "strip"
+    
+  # Extract writer information from "Payday Writers" field
+  - dest: "Participant 1 Name"
+    source: "Payday Writers"
+    transform: "extract_writer_name"
+    validation: "required"
+    
+  - dest: "Participant 1 Role"
+    source: ""
+    transform: ""
+    default: "CA"
+    validation: "valid_role"
+    
+  - dest: "Participant 1 IPI"
+    source: "Payday Writers' CAE/IPI#"
+    transform: "extract_writer_ipi"
+    validation: "ipi_format"
+    
+  - dest: "Participant 1 Society"
+    source: "Payday Writers"
+    transform: "extract_writer_society"
+    validation: "valid_society"
+    
+  # Extract share information from "Payday Shares" field  
+  - dest: "Participant 1 Mechanical Share"
+    source: "Payday Shares"
+    transform: "extract_mechanical_share"
+    validation: "share_range"
+    
+  - dest: "Participant 1 Performance Share"
+    source: "Payday Shares"
+    transform: "extract_performance_share"
+    validation: "share_range"
+    
+  # Additional writer from "Add'l Writer" field
+  - dest: "Participant 2 Name"
+    source: "Add'l Writer"
+    transform: "extract_additional_writer_name"
+    
+  - dest: "Participant 2 Role"
+    source: ""
+    transform: ""
+    default: "CA"
+    validation: "valid_role"
+    
+  - dest: "Participant 2 IPI"
+    source: ""
+    transform: ""
+    default: ""
+    
+  - dest: "Participant 2 Society"
+    source: "Add'l Writer"
+    transform: "extract_additional_writer_society"
+    validation: "valid_society"
+    
+  - dest: "Participant 2 Mechanical Share"
+    source: "Add'l Writer"
+    transform: "extract_additional_mechanical_share"
+    validation: "share_range"
+    
+  - dest: "Participant 2 Performance Share"
+    source: "Add'l Writer"
+    transform: "extract_additional_performance_share"
+    validation: "share_range"
+    
+  # Publisher information (extracted from Payday Shares)
+  - dest: "Participant 3 Name"
+    source: "Payday Shares"
+    transform: "extract_publisher_name"
+    
+  - dest: "Participant 3 Role"
+    source: ""
+    transform: ""
+    default: "E"
+    validation: "valid_role"
+    
+  - dest: "Participant 3 IPI"
+    source: ""
+    transform: ""
+    default: ""
+    
+  - dest: "Participant 3 Society"
+    source: "Payday Shares"
+    transform: "extract_publisher_society"
+    validation: "valid_society"
+    
+  - dest: "Participant 3 Mechanical Share"
+    source: "Payday Shares"
+    transform: "extract_publisher_mechanical_share"
+    validation: "share_range"
+    
+  - dest: "Participant 3 Performance Share"
+    source: "Payday Shares"
+    transform: "extract_publisher_performance_share"
+    validation: "share_range"
+    
+  # Additional fields
+  - dest: "Duration"
+    source: ""
+    transform: "format_duration"
+    default: ""
+    
+  - dest: "ISRC"
+    source: "ISRC #s"
+    transform: "format_isrc"
+    validation: "isrc_format"
+    
+  - dest: "Catalog Number"
+    source: "Main Identifier"
+    transform: "strip"
+
+# Lookup tables for data transformation
+lookups:
+  role_codes:
+    "Writer": "CA"
+    "Composer": "C" 
+    "Author": "A"
+    "Arranger": "AR"
+    "Translator": "T"
+    "Adapter": "AD"
+    "Publisher": "E"
+    "Sub-Publisher": "ES"
+    "Administrator": "PA"
+    
+  society_codes:
+    "ASCAP": "ASCAP"
+    "BMI": "BMI" 
+    "SESAC": "SESAC"
+    "PRS": "PRS"
+    "GEMA": "GEMA"
+    "SACEM": "SACEM"
+    "SOCAN": "SOCAN"
+    "APRA": "APRA"
+    
+  territories:
+    "World": "WW"
+    "Worldwide": "WW"
+    "United States": "US"
+    "Canada": "CA"
+    "United Kingdom": "GB"
+    "Europe": "EU"
+    "World ex US": "WW-US"
+    "World ex US/CA": "WW-US-CA"
+
+# Validation rules
+validation_rules:
+  required_fields: ["Work Title", "Participant 1 Name"]
+  share_tolerance: 0.01
+  max_participants: 10
+  date_format: "%Y-%m-%d"
+  iswc_pattern: "^T-\\d{9}-\\d$"
+  isrc_pattern: "^[A-Z]{2}[A-Z0-9]{3}\\d{7}$"
+  ipi_pattern: "^\\d{9}$|^\\d{11}$"
